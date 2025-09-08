@@ -1,0 +1,13 @@
+{
+	"servers": {
+		"microsoft.docs.mcp": {
+			"url": "https://learn.microsoft.com/api/mcp",
+			"type": "http"
+		},
+		"fastapi-mcp": {
+			"url": "http://127.0.0.1:8000/mcp/",
+			"type": "http"
+		}
+	},
+	"inputs": []
+}
