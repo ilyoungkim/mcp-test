@@ -5,6 +5,7 @@ import uuid
 import logging
 import pymysql
 from contextlib import contextmanager
+import os
 
 # ---------------------------------------------------------------------------
 # Logging Setup
@@ -32,11 +33,11 @@ app = FastAPI()
 # Database (MariaDB) Configuration (simple non-pooled connections)
 # ---------------------------------------------------------------------------
 DB_CONFIG = {
-    "host": "192.168.31.136",
-    "port": 3306,
-    "user": "fortune",
-    "password": "user!1234@abcd",
-    "database": "manse",
+    "host": os.getenv("MCP_DB_HOST", "192.168.31.136"),
+    "port": int(os.getenv("MCP_DB_PORT", "3306")),
+    "user": os.getenv("MCP_DB_USER", "fortune"),
+    "password": os.getenv("MCP_DB_PASSWORD", "user!1234@abcd"),
+    "database": os.getenv("MCP_DB_NAME", "manse"),
     "charset": "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
 }
