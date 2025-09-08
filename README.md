@@ -54,8 +54,8 @@ curl -X POST http://127.0.0.1:8000/mcp/rpc \
 |----------|---------|-------------|
 | MCP_DB_HOST | 192.168.31.136 | MariaDB host |
 | MCP_DB_PORT | 3306 | MariaDB port |
-| MCP_DB_USER | fortune | DB user |
-| MCP_DB_PASSWORD | user!1234@abcd | DB password |
+| MCP_DB_USER |  | DB user |
+| MCP_DB_PASSWORD |  | DB password |
 | MCP_DB_NAME | manse | Database name |
 
 Example run with overrides:
