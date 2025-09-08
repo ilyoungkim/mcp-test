@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 from typing import Any, Dict, Optional, List
 import uuid
 import logging
+import pymysql
+from contextlib import contextmanager
 
 # ---------------------------------------------------------------------------
 # Logging Setup
@@ -25,6 +27,38 @@ def _truncate(obj, limit: int = LOG_TRUNCATE):
     return s if len(s) <= limit else s[: limit - 3] + "..."
 
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Database (MariaDB) Configuration (simple non-pooled connections)
+# ---------------------------------------------------------------------------
+DB_CONFIG = {
+    "host": "192.168.31.136",
+    "port": 3306,
+    "user": "fortune",
+    "password": "user!1234@abcd",
+    "database": "manse",
+    "charset": "utf8mb4",
+    "cursorclass": pymysql.cursors.DictCursor,
+}
+
+
+@contextmanager
+def get_db_cursor():
+    conn = None
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception as e:  # pragma: no cover
+        logger.exception("DB operation failed")
+        raise
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:  # pragma: no cover
+                pass
 
 
 class MCPRequest(BaseModel):
@@ -211,7 +245,56 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             },
         ),
     },
+    "query_manse": {
+        "callable": lambda args: _tool_query_manse(args),
+        "meta": Tool(
+            name="query_manse",
+            description="Run a SELECT query on manse.manse_data table with optional filters (limit default 10)",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "columns": {"type": "array", "items": {"type": "string"}, "description": "Columns to select"},
+                    "where": {"type": "string", "description": "Raw SQL WHERE clause without 'WHERE'"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 10},
+                },
+            },
+        ),
+    },
 }
+
+
+def _tool_query_manse(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("tool query_manse arguments=%s", _truncate(arguments))
+    columns = arguments.get("columns") or ["*"]
+    where_clause = arguments.get("where")
+    limit = arguments.get("limit") or 10
+    if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
+        raise ValueError("'columns' must be a list of strings")
+    if not isinstance(limit, int) or limit < 1 or limit > 500:
+        raise ValueError("'limit' must be int 1-500")
+
+    select_part = ", ".join(columns)
+    base_query = f"SELECT {select_part} FROM manse_data"
+    params = []
+    if where_clause:
+        # NOTE: Danger: raw clause; for safer usage parametrize or parse. Here kept minimal per request.
+        base_query += f" WHERE {where_clause}"
+    base_query += " LIMIT %s"
+    params.append(limit)
+
+    logger.debug("query_manse executing sql=%s params=%s", base_query, params)
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(base_query, params)
+            rows = cur.fetchall()
+    except Exception as e:
+        logger.debug("query_manse execution error=%s", e)
+        raise ValueError("Database query failed")
+
+    # Truncate row preview
+    preview = rows[:3]
+    logger.debug("query_manse rows_fetched=%d preview=%s", len(rows), _truncate(preview))
+    return {"type": "json", "content": {"rows": rows, "count": len(rows)}}
 
 
 def _jsonrpc_error(id_val, code: int, message: str, data: Any = None):
