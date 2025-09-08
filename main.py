@@ -310,7 +310,6 @@ def _tool_calc_daewoon(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "WHERE CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')) < %s "
         "ORDER BY cd_no DESC LIMIT 1"
     )
-
     asc_val = None
     desc_val = None
     try:
