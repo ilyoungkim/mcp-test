@@ -297,15 +297,15 @@ def _tool_calc_daewoon(arguments: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("'yyyymmdd' must be 8-digit string (YYYYMMDD)")
 
     next_sql = (
-        "SELECT ROUND(ABS(DATEDIFF(STR_TO_DATE(CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')),'%Y%m%d'),"
-        " STR_TO_DATE(%s,'%Y%m%d'))/3)) AS diff_days "
+        "SELECT ROUND(ABS(DATEDIFF(STR_TO_DATE(CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')),'%%Y%%m%%d'),"
+        " STR_TO_DATE(%s,'%%Y%%m%%d'))/3)) AS diff_days "
         "FROM manse.v_24terms_calendar v24 "
         "WHERE CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')) > %s "
         "ORDER BY cd_no ASC LIMIT 1"
     )
     prev_sql = (
-        "SELECT ROUND(ABS(DATEDIFF(STR_TO_DATE(CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')),'%Y%m%d'),"
-        " STR_TO_DATE(%s,'%Y%m%d'))/3)) AS diff_days "
+        "SELECT ROUND(ABS(DATEDIFF(STR_TO_DATE(CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')),'%%Y%%m%%d'),"
+        " STR_TO_DATE(%s,'%%Y%%m%%d'))/3)) AS diff_days "
         "FROM manse.v_24terms_calendar v24 "
         "WHERE CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')) < %s "
         "ORDER BY cd_no DESC LIMIT 1"
@@ -336,6 +336,12 @@ def _tool_calc_daewoon(arguments: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Database query failed for calc_daewoon")
 
     content = {"asc_diff_days": asc_val, "desc_diff_days": desc_val}
+    # Normalize Decimal to float/int for JSON safety
+    for k, v in list(content.items()):
+        import decimal
+        if isinstance(v, decimal.Decimal):
+            # if it's integral keep int
+            content[k] = int(v) if v == v.to_integral_value() else float(v)
     logger.debug("calc_daewoon result=%s", content)
     return {"type": "json", "content": content}
 
