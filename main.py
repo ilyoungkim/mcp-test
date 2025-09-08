@@ -67,69 +67,57 @@ class MCPRequest(BaseModel):
     model: Optional[str] = Field(default=None, description="Model identifier (optional)")
     inputs: Optional[Any] = Field(default=None, description="Arbitrary input payload; requires 'inputs' root field")
     instructions: Optional[str] = Field(default=None, description="Optional instructions for processing")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata dictionary")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Arbitrary metadata")
 
 
 class MCPOutput(BaseModel):
-    type: str = Field(description="Output type, e.g., 'text'")
-    content: str = Field(description="Output content text")
+    type: str
+    content: Any
 
 
 class MCPResponse(BaseModel):
     id: str
     status: str
-    model: Optional[str]
+    model: Optional[str] = None
     outputs: List[MCPOutput]
 
 
-@app.get("/")
-def read_root():
-    logger.debug("/ root endpoint accessed")
-    resp = {"message": "FastAPI MCP Server is running"}
-    logger.debug("/ root response=%s", resp)
-    return resp
+def _derive_output_text(inputs: Any) -> str:
+    """Very small helper to derive output text from provided inputs structure."""
+    if inputs is None:
+        raise HTTPException(status_code=400, detail="'inputs' field required")
+    if isinstance(inputs, dict):
+        # prefer 'text' key
+        if "text" in inputs:
+            return str(inputs["text"])
+        return str(inputs)
+    if isinstance(inputs, (list, tuple)):
+        return ", ".join(map(str, inputs))
+    return str(inputs)
 
 
-def _derive_output_text(raw: Any) -> str:
-    """Derive a simple text output from the provided inputs.
-
-    If inputs is a dict containing a 'text' key, echo that value.
-    Otherwise, fallback to stringifying the entire object.
-    """
-    logger.debug("_derive_output_text raw_type=%s raw=%s", type(raw).__name__, _truncate(raw))
-    try:
-        if isinstance(raw, dict) and "text" in raw:
-            logger.debug("_derive_output_text branch=dict-with-text")
-            return str(raw["text"])  # ensure always string
-        logger.debug("_derive_output_text branch=generic-cast")
-        return str(raw)
-    except Exception as e:  # pragma: no cover (defensive)
-        logger.warning("Failed to derive output text: %s", e)
-        return ""
-
-
-# Support both /mcp and /mcp/ paths for POST
-@app.post("/mcp", response_model=MCPResponse)
-@app.post("/mcp/", response_model=MCPResponse)
-async def mcp_endpoint(req: MCPRequest):
-    """Minimal MCP-like handler returning a structured response."""
-    logger.debug("/mcp POST received body=%s", _truncate(req.model_dump()))
-    if req.inputs is None:
-        logger.warning("/mcp POST missing 'inputs'")
-        raise HTTPException(status_code=400, detail="`inputs` field is required")
-
+@app.post("/mcp")
+@app.post("/mcp/")
+def mcp_endpoint(req: MCPRequest):
+    """Primary MCP-style processing endpoint (simple echo semantics)."""
+    logger.debug("/mcp POST received model=%s inputs=%s instructions=%s", req.model, _truncate(req.inputs), _truncate(req.instructions))
     run_id = str(uuid.uuid4())
-    logger.debug("/mcp assigned run_id=%s", run_id)
-    output_text = _derive_output_text(req.inputs)
-    logger.debug("/mcp derived output_text=%s", _truncate(output_text))
+    try:
+        output_text = _derive_output_text(req.inputs)
+    except HTTPException:
+        logger.debug("/mcp missing 'inputs' -> 400")
+        raise
+    except Exception as e:  # pragma: no cover
+        logger.exception("/mcp unexpected error deriving output text")
+        raise HTTPException(status_code=500, detail="Processing error") from e
 
+    logger.debug("/mcp derived output_text=%s", _truncate(output_text))
     response = MCPResponse(
         id=run_id,
         status="succeeded",
         model=req.model,
         outputs=[MCPOutput(type="text", content=output_text)],
     )
-
     logger.info("/mcp completed id=%s model=%s", run_id, req.model)
     logger.debug("/mcp response=%s", _truncate(response.model_dump()))
     return response
@@ -296,6 +284,76 @@ def _tool_query_manse(arguments: Dict[str, Any]) -> Dict[str, Any]:
     preview = rows[:3]
     logger.debug("query_manse rows_fetched=%d preview=%s", len(rows), _truncate(preview))
     return {"type": "json", "content": {"rows": rows, "count": len(rows)}}
+
+
+def _tool_calc_daewoon(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute asc_diff_days and desc_diff_days based on provided yyyymmdd using manse.v_24terms_calendar.
+
+    Logic mirrors the provided SQL template. Returns JSON with both values.
+    """
+    logger.debug("tool calc_daewoon arguments=%s", _truncate(arguments))
+    ymd = arguments.get("yyyymmdd")
+    if not isinstance(ymd, str) or len(ymd) != 8 or not ymd.isdigit():
+        raise ValueError("'yyyymmdd' must be 8-digit string (YYYYMMDD)")
+
+    next_sql = (
+        "SELECT ROUND(ABS(DATEDIFF(STR_TO_DATE(CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')),'%Y%m%d'),"
+        " STR_TO_DATE(%s,'%Y%m%d'))/3)) AS diff_days "
+        "FROM manse.v_24terms_calendar v24 "
+        "WHERE CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')) > %s "
+        "ORDER BY cd_no ASC LIMIT 1"
+    )
+    prev_sql = (
+        "SELECT ROUND(ABS(DATEDIFF(STR_TO_DATE(CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')),'%Y%m%d'),"
+        " STR_TO_DATE(%s,'%Y%m%d'))/3)) AS diff_days "
+        "FROM manse.v_24terms_calendar v24 "
+        "WHERE CONCAT(cd_sy, LPAD(cd_sm,2,'0'), LPAD(cd_sd,2,'0')) < %s "
+        "ORDER BY cd_no DESC LIMIT 1"
+    )
+
+    asc_val = None
+    desc_val = None
+    try:
+        with get_db_cursor() as cur:
+            logger.debug("calc_daewoon next_sql=%s ymd=%s", next_sql, ymd)
+            cur.execute(next_sql, (ymd, ymd))
+            r1 = cur.fetchone()
+            if r1:
+                try:
+                    asc_val = r1["diff_days"]  # type: ignore[index]
+                except Exception:
+                    asc_val = r1[0] if isinstance(r1, (list, tuple)) and r1 else None
+            logger.debug("calc_daewoon prev_sql=%s ymd=%s", prev_sql, ymd)
+            cur.execute(prev_sql, (ymd, ymd))
+            r2 = cur.fetchone()
+            if r2:
+                try:
+                    desc_val = r2["diff_days"]  # type: ignore[index]
+                except Exception:
+                    desc_val = r2[0] if isinstance(r2, (list, tuple)) and r2 else None
+    except Exception as e:
+        logger.debug("calc_daewoon query error=%s", e)
+        raise ValueError("Database query failed for calc_daewoon")
+
+    content = {"asc_diff_days": asc_val, "desc_diff_days": desc_val}
+    logger.debug("calc_daewoon result=%s", content)
+    return {"type": "json", "content": content}
+
+# register calc_daewoon tool now that function exists
+TOOLS["calc_daewoon"] = {
+    "callable": lambda args: _tool_calc_daewoon(args),
+    "meta": Tool(
+        name="calc_daewoon",
+        description="Calculate asc/desc diff_days (daewoon numbers) from 24 terms calendar for a given yyyymmdd",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "yyyymmdd": {"type": "string", "description": "Base date in YYYYMMDD format"}
+            },
+            "required": ["yyyymmdd"],
+        },
+    ),
+}
 
 
 def _jsonrpc_error(id_val, code: int, message: str, data: Any = None):

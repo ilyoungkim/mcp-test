@@ -6,7 +6,7 @@ Minimal FastAPI implementation that mimics a subset of Model Context Protocol (M
 - Echo-style POST `/mcp` endpoint returning structured response (id, status, outputs)
 - JSON-RPC 2.0 endpoint `/mcp/rpc` supporting:
   - `mcp.list_tools`
-  - `mcp.call_tool` (tools: `echo`, `uppercase`, `query_manse`)
+  - `mcp.call_tool` (tools: `echo`, `uppercase`, `query_manse`, `calc_daewoon`)
 - GET usage helper `/mcp`
 - Pydantic models for request/response
 - Basic logging
@@ -48,6 +48,31 @@ curl -X POST http://127.0.0.1:8000/mcp/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"mcp.call_tool","params":{"name":"query_manse","arguments":{"limit":5}}}'
 ```
+
+Call calc_daewoon (example date):
+```bash
+curl -X POST http://127.0.0.1:8000/mcp/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"mcp.call_tool","params":{"name":"calc_daewoon","arguments":{"yyyymmdd":"20250115"}}}'
+```
+
+Response example:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "outputs": [
+      {"type": "json", "content": {"asc_diff_days": 3, "desc_diff_days": 2}}
+    ]
+  }
+}
+```
+
+Meaning:
+- asc_diff_days: 기준일 이후 다음 절기까지 (일수 / 3 반올림)
+- desc_diff_days: 기준일 이전 직전 절기까지 (일수 / 3 반올림)
+- 없으면 null
 
 ## Environment Variables (DB)
 | Variable | Default | Description |
