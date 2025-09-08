@@ -4,10 +4,25 @@ from typing import Any, Dict, Optional, List
 import uuid
 import logging
 
+# ---------------------------------------------------------------------------
+# Logging Setup
+# ---------------------------------------------------------------------------
+
 # Configure basic logging
 logger = logging.getLogger("mcp")
 if not logger.handlers:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+
+
+LOG_TRUNCATE = 300
+
+
+def _truncate(obj, limit: int = LOG_TRUNCATE):
+    try:
+        s = str(obj)
+    except Exception:
+        return "<unrepresentable>"
+    return s if len(s) <= limit else s[: limit - 3] + "..."
 
 app = FastAPI()
 
@@ -34,7 +49,10 @@ class MCPResponse(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "FastAPI MCP Server is running"}
+    logger.debug("/ root endpoint accessed")
+    resp = {"message": "FastAPI MCP Server is running"}
+    logger.debug("/ root response=%s", resp)
+    return resp
 
 
 def _derive_output_text(raw: Any) -> str:
@@ -43,9 +61,12 @@ def _derive_output_text(raw: Any) -> str:
     If inputs is a dict containing a 'text' key, echo that value.
     Otherwise, fallback to stringifying the entire object.
     """
+    logger.debug("_derive_output_text raw_type=%s raw=%s", type(raw).__name__, _truncate(raw))
     try:
         if isinstance(raw, dict) and "text" in raw:
+            logger.debug("_derive_output_text branch=dict-with-text")
             return str(raw["text"])  # ensure always string
+        logger.debug("_derive_output_text branch=generic-cast")
         return str(raw)
     except Exception as e:  # pragma: no cover (defensive)
         logger.warning("Failed to derive output text: %s", e)
@@ -57,11 +78,15 @@ def _derive_output_text(raw: Any) -> str:
 @app.post("/mcp/", response_model=MCPResponse)
 async def mcp_endpoint(req: MCPRequest):
     """Minimal MCP-like handler returning a structured response."""
+    logger.debug("/mcp POST received body=%s", _truncate(req.model_dump()))
     if req.inputs is None:
+        logger.warning("/mcp POST missing 'inputs'")
         raise HTTPException(status_code=400, detail="`inputs` field is required")
 
     run_id = str(uuid.uuid4())
+    logger.debug("/mcp assigned run_id=%s", run_id)
     output_text = _derive_output_text(req.inputs)
+    logger.debug("/mcp derived output_text=%s", _truncate(output_text))
 
     response = MCPResponse(
         id=run_id,
@@ -70,7 +95,8 @@ async def mcp_endpoint(req: MCPRequest):
         outputs=[MCPOutput(type="text", content=output_text)],
     )
 
-    logger.info("Processed MCP request id=%s model=%s", run_id, req.model)
+    logger.info("/mcp completed id=%s model=%s", run_id, req.model)
+    logger.debug("/mcp response=%s", _truncate(response.model_dump()))
     return response
 
 
@@ -78,7 +104,8 @@ async def mcp_endpoint(req: MCPRequest):
 @app.get("/mcp/")
 def mcp_get():
     """Helpful usage info for GET callers (instead of 405)."""
-    return {
+    logger.debug("/mcp GET accessed")
+    resp = {
         "detail": "Use POST /mcp with JSON body. Example: {\"inputs\": {\"text\": \"hello\"}}",
         "allowed_methods": ["POST"],
         "schema": {
@@ -98,6 +125,8 @@ def mcp_get():
             },
         },
     }
+    logger.debug("/mcp GET response=%s", _truncate(resp))
+    return resp
 
 # ---------------------- JSON-RPC (minimal MCP-style) ----------------------
 from pydantic import BaseModel
@@ -136,17 +165,25 @@ class Tool(BaseModel):
 
 
 def _tool_echo(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("tool echo arguments=%s", _truncate(arguments))
     text = arguments.get("text")
     if text is None:
+        logger.debug("tool echo missing text -> error")
         raise ValueError("'text' field required")
-    return {"type": "text", "content": str(text)}
+    result = {"type": "text", "content": str(text)}
+    logger.debug("tool echo result=%s", result)
+    return result
 
 
 def _tool_upper(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    logger.debug("tool uppercase arguments=%s", _truncate(arguments))
     text = arguments.get("text")
     if text is None:
+        logger.debug("tool uppercase missing text -> error")
         raise ValueError("'text' field required")
-    return {"type": "text", "content": str(text).upper()}
+    result = {"type": "text", "content": str(text).upper()}
+    logger.debug("tool uppercase result=%s", result)
+    return result
 
 
 TOOLS: Dict[str, Dict[str, Any]] = {
@@ -178,6 +215,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 
 
 def _jsonrpc_error(id_val, code: int, message: str, data: Any = None):
+    logger.debug("jsonrpc error id=%s code=%s message=%s data=%s", id_val, code, message, _truncate(data))
     return JSONRPCError(id=id_val, error=JSONRPCErrorObj(code=code, message=message, data=data))
 
 
@@ -189,32 +227,42 @@ async def mcp_rpc(req: JSONRPCRequest):
     - mcp.list_tools -> { tools: [ { name, description, input_schema } ] }
     - mcp.call_tool (params: { name: str, arguments: object }) -> { outputs: [ {type, content} ] }
     """
+    logger.debug("/mcp/rpc received id=%s method=%s params=%s", req.id, req.method, _truncate(req.params))
     if req.jsonrpc != "2.0":
+        logger.debug("/mcp/rpc invalid jsonrpc version=%s", req.jsonrpc)
         return _jsonrpc_error(req.id, -32600, "Invalid JSON-RPC version")
 
     method = req.method
     params = req.params or {}
 
     if method == "mcp.list_tools":
+        logger.debug("/mcp/rpc listing tools")
         tools = [t["meta"].model_dump() for t in TOOLS.values()]
+        logger.debug("/mcp/rpc tools_count=%d", len(tools))
         return JSONRPCSuccess(id=req.id, result={"tools": tools})
 
     if method == "mcp.call_tool":
         name = params.get("name")
         arguments = params.get("arguments") or {}
+        logger.debug("/mcp/rpc call_tool name=%s args=%s", name, _truncate(arguments))
         if not name:
+            logger.debug("/mcp/rpc call_tool missing name")
             return _jsonrpc_error(req.id, -32602, "Missing 'name' in params")
         tool_entry = TOOLS.get(name)
         if not tool_entry:
+            logger.debug("/mcp/rpc call_tool tool_not_found name=%s", name)
             return _jsonrpc_error(req.id, -32601, f"Tool '{name}' not found")
         try:
             output = tool_entry["callable"](arguments)
+            logger.debug("/mcp/rpc call_tool success name=%s output=%s", name, output)
             return JSONRPCSuccess(id=req.id, result={"outputs": [output]})
         except ValueError as ve:
+            logger.debug("/mcp/rpc call_tool validation_error name=%s error=%s", name, ve)
             return _jsonrpc_error(req.id, -32602, str(ve))
         except Exception as e:  # pragma: no cover
             logger.exception("Tool execution error")
             return _jsonrpc_error(req.id, -32000, "Tool execution failure", data=str(e))
 
     # Method not found
+    logger.debug("/mcp/rpc method_not_found method=%s", method)
     return _jsonrpc_error(req.id, -32601, f"Method '{method}' not found")
